@@ -2,10 +2,48 @@ import express from "express";
 import {prisma} from "../prisma";
 import { emailQueue } from "../queue";
 import { redis } from "../redis";
+
 import { getHourWindow, startOfNextHour } from "../utils/time";
+import { upload } from "../middleware/upload";
+import { parse } from "csv-parse/sync";
+import { scheduleCampaignEmails } from "../services/scheduler.services";
+
 
 
 export const campaignRouter = express.Router();
+
+
+//Get Scheduled emails
+campaignRouter.get("/scheduled", async (_req, res) => {
+  const emails = await prisma.email.findMany({
+    where: {
+      status: "PENDING"
+    },
+    orderBy: {
+      scheduledAt: "asc"
+    },
+    take: 100
+  });
+
+  res.json(emails);
+});
+
+// Get sent emails
+campaignRouter.get("/sent", async (_req, res) => {
+  const emails = await prisma.email.findMany({
+    where: {
+      status: {
+        in: ["SENT", "FAILED"]
+      }
+    },
+    orderBy: {
+      sentAt: "desc"
+    },
+    take: 100
+  });
+
+  res.json(emails);
+});
 
 
 campaignRouter.post("/create", async (req, res) => {
@@ -49,57 +87,15 @@ campaignRouter.post("/create", async (req, res) => {
     }
   });
 
-  //Creating emails + schedule jobs
-  for (let i = 0; i < recipients.length; i++) {
-  let scheduledAt = new Date(start.getTime() + i * delayMs);
-
-  // Enforce hourly limit
-  while (true) {
-    const window = getHourWindow(scheduledAt);
-    const key = `email_rate:${campaign.id}:${window}`;
-
-    const current = await redis.get(key);
-    const count = current ? parseInt(current, 10) : 0;
-
-    if (count < hourlyLimit) {
-      // Reserve slot
-      await redis.multi()
-        .incr(key)
-        .expire(key, 60 * 60 * 24) // auto cleanup after 24h
-        .exec();
-
-      break; // scheduledAt accepted
-    } else {
-      // Move to next hour
-      scheduledAt = startOfNextHour(scheduledAt);
-    }
-  }
-
-  const email = await prisma.email.create({
-    data: {
-      campaignId: campaign.id,
-      to: recipients[i],
-      subject,
-      body,
-      status: "PENDING",
-      scheduledAt
-    }
-  });
-
-  const delay = scheduledAt.getTime() - Date.now();
-
-  const job = await emailQueue.add(
-    "send-email",
-    { emailId: email.id },
-    { delay: Math.max(0, delay) }
-  );
-
-  await prisma.email.update({
-    where: { id: email.id },
-    data: { jobId: job.id }
-  });
-}
-
+  scheduleCampaignEmails({
+    campaignId: campaign.id,
+    subject,
+    body,
+    recipients,
+    startTime: start,
+    delayMs: Number(delayMs),
+    hourlyLimit: Number(hourlyLimit)
+  })
 
   res.json({
     ok: true,
@@ -107,3 +103,65 @@ campaignRouter.post("/create", async (req, res) => {
     scheduled: recipients.length
   });
 });
+
+
+campaignRouter.post(
+  "/from-csv",
+  upload.single("file"),
+  async (req, res) => {
+    const { subject, body, startTime, delayMs, hourlyLimit } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({ error: "CSV file is required" });
+    }
+
+    const start = new Date(startTime);
+
+    if (isNaN(start.getTime())) {
+      return res.status(400).json({ error: "Invalid startTime" });
+    }
+
+    const csvText = req.file.buffer.toString("utf-8");
+
+    const records = parse(csvText, {
+      skip_empty_lines: true
+    });
+
+    // Flatten and clean emails
+    const recipients = records
+      .flat()
+      .map((x: string) => x.trim())
+      .filter((x: string) => x.includes("@"));
+
+    if (recipients.length === 0) {
+      return res.status(400).json({ error: "No valid emails in CSV" });
+    }
+
+    // Create campaign
+    const campaign = await prisma.campaign.create({
+      data: {
+        userId: 1,
+        startTime: start,
+        delayMs: Number(delayMs),
+        hourlyLimit: Number(hourlyLimit)
+      }
+    });
+
+    scheduleCampaignEmails({
+    campaignId: campaign.id,
+    subject,
+    body,
+    recipients,
+    startTime: start,
+    delayMs: Number(delayMs),
+    hourlyLimit: Number(hourlyLimit)
+  })
+
+    res.json({
+      ok: true,
+      campaignId: campaign.id,
+      recipients: recipients.length
+    });
+  }
+);
+
