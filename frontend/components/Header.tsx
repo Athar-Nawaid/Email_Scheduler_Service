@@ -7,14 +7,18 @@ export default function Header() {
 
   return (
     <div className="h-16 border-b flex items-center px-6">
-      <div className="font-bold text-lg">ReachInbox Scheduler</div>
+      <div className="font-bold text-lg">Email Scheduler</div>
 
       <div className="ml-auto flex items-center gap-3">
-        <img
-          src={session?.user?.image || ""}
-          className="w-8 h-8 rounded-full"
-          alt="avatar"
-        />
+        {session?.user?.image && (
+          <img
+            src={session.user.image}
+            referrerPolicy="no-referrer"
+            className="w-8 h-8 rounded-full"
+            alt="avatar"
+          />
+        )}
+
         <div className="text-sm">
           <div>{session?.user?.name}</div>
           <div className="text-gray-500 text-xs">
