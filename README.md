@@ -22,7 +22,7 @@ It supports **delayed scheduling**, **rate limiting**, **CSV uploads**, and **pe
 - Worker updates status: `PENDING → SENT / FAILED`
 - Re-enqueue when rate limit is hit
 - APIs:
-  - `POST /campaign`
+  - `POST /campaign/create`
   - `POST /campaign/from-csv`
   - `GET /campaign/scheduled`
   - `GET /campaign/sent`
